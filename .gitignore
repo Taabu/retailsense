@@ -1,0 +1,138 @@
+# -----------------------------------------------------------------------------
+# Python & Virtual Environments
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments (uv creates .venv)
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# -----------------------------------------------------------------------------
+# IDE & Editors
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# -----------------------------------------------------------------------------
+# OS Generated Files
+# -----------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.log
+
+# -----------------------------------------------------------------------------
+# Docker & Containers
+# -----------------------------------------------------------------------------
+# Ignore local docker data volumes (persisted data)
+infra/docker/*/data/
+infra/docker/*/logs/
+*.db  # Ignore SQLite files (like superset.db if it reappears)
+
+# But DO track docker-compose.yml and config files
+!docker-compose.yml
+!infra/docker/*/config/
+!infra/docker/*/init/
+
+# -----------------------------------------------------------------------------
+# Jupyter Notebooks
+# -----------------------------------------------------------------------------
+.ipynb_checkpoints
+*.ipynb
+
+# -----------------------------------------------------------------------------
+# Testing & Coverage
+# -----------------------------------------------------------------------------
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.hypothesis/
+coverage.xml
+
+# -----------------------------------------------------------------------------
+# Secrets & Credentials (CRITICAL)
+# -----------------------------------------------------------------------------
+.env
+*.pem
+*.key
+secrets/
+credentials.json
+*.secret
+*_secret.*
+
+# -----------------------------------------------------------------------------
+# Local Configuration Overrides
+# -----------------------------------------------------------------------------
+# Ignore local overrides of config files
+*_local.*
+override.*
+
+# -----------------------------------------------------------------------------
+# Spark & Big Data
+# -----------------------------------------------------------------------------
+spark-warehouse/
+metastore_db/
+derby.log
+yarn/
+hadoop/
+
+# -----------------------------------------------------------------------------
+# Temporary Files
+# -----------------------------------------------------------------------------
+*.tmp
+*.temp
+.cache
+temp/
+tmp/
+
+# -----------------------------------------------------------------------------
+# Logs
+# -----------------------------------------------------------------------------
+logs/
+*.log
+
+# -----------------------------------------------------------------------------
+# Build Artifacts
+# -----------------------------------------------------------------------------
+*.tar.gz
+*.whl
+*.zip
