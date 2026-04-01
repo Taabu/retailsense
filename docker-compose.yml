@@ -1,0 +1,170 @@
+services:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MQTT Broker (Mosquitto)
+  # ─────────────────────────────────────────────────────────────────────────────
+  mosquitto:
+    image: eclipse-mosquitto:2.0.18
+    container_name: retailsense-mosquitto
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./infra/docker/mosquitto/config:/mosquitto/config
+      - ./infra/docker/mosquitto/data:/mosquitto/data
+      - ./infra/docker/mosquitto/log:/mosquitto/log
+    restart: unless-stopped
+    networks:
+      - retailsense-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Kafka & Zookeeper
+  # ─────────────────────────────────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: retailsense-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - retailsense-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: retailsense-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - retailsense-net
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: retailsense-kafka-ui
+    ports:
+      - "8082:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    depends_on:
+      - kafka
+    restart: unless-stopped
+    networks:
+      - retailsense-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MinIO (S3 Compatible)
+  # ─────────────────────────────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: retailsense-minio
+    ports:
+      - "9000:9000"
+      - "9002:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9001"
+    volumes:
+      - ./infra/docker/minio/data:/data
+    restart: unless-stopped
+    networks:
+      - retailsense-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PostgreSQL
+  # ─────────────────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: retailsense-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: retail_metadata
+    volumes:
+      - ./infra/docker/postgres/data:/var/lib/postgresql/data
+      - ./infra/docker/postgres/init:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+    networks:
+      - retailsense-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Trino
+  # ─────────────────────────────────────────────────────────────────────────────
+  trino:
+    image: trinodb/trino:435
+    container_name: retailsense-trino
+    ports:
+      - "8083:8080"
+    volumes:
+      - ./infra/docker/trino/catalog:/etc/trino/catalog
+    environment:
+      TRINO_MEMORY_HEAP_SIZE: 1g
+    restart: unless-stopped
+    networks:
+      - retailsense-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Apache Superset
+  # ─────────────────────────────────────────────────────────────────────────────
+  superset:
+    image: apache/superset:3.1.3
+    container_name: retailsense-superset
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SQLALCHEMY_DATABASE_URI: ${SUPERSET_DB_URI}
+      # Force the home directory to /tmp to avoid SQLite creation
+      SUPERSET_HOME: /tmp/superset_home
+    depends_on:
+      - postgres
+    volumes:
+      # Mount the custom config file to the pythonpath
+      - ./infra/docker/superset/home/superset_config.py:/app/pythonpath/superset_config.py:ro
+      # Mount the home directory to /tmp inside the container (optional, but good for persistence if needed)
+      - ./infra/docker/superset/home:/app/superset_home
+    restart: unless-stopped
+    networks:
+      - retailsense-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Spark Master
+  # ─────────────────────────────────────────────────────────────────────────────
+  spark-master:
+    image: bitnamilegacy/spark:3.5.6
+    # Alternative if the above fails:
+    # image: apache/spark:3.5.0
+    container_name: retailsense-spark-master
+    ports:
+      - "8080-8081:8080-8081"
+      - "7077:7077"
+    environment:
+      SPARK_MODE: master
+      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
+      SPARK_RPC_ENCRYPTION_ENABLED: "no"
+      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
+      SPARK_SSL_ENABLED: "no"
+    volumes:
+      - ./infra/docker/spark/master:/opt/bitnami/spark/conf
+    restart: unless-stopped
+    networks:
+      - retailsense-net
+
+networks:
+  retailsense-net:
+    driver: bridge
