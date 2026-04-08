@@ -30,6 +30,8 @@ venv/
 ENV/
 env/
 .env
+.env.local
+.env.*.local
 
 # -----------------------------------------------------------------------------
 # IDE & Editors
@@ -63,12 +65,23 @@ Thumbs.db
 # Ignore local docker data volumes (persisted data)
 infra/docker/*/data/
 infra/docker/*/logs/
-*.db  # Ignore SQLite files (like superset.db if it reappears)
+infra/docker/*/db/
+*.db
 
 # But DO track docker-compose.yml and config files
 !docker-compose.yml
 !infra/docker/*/config/
 !infra/docker/*/init/
+!infra/docker/*/catalog/
+
+# -----------------------------------------------------------------------------
+# Generated Config Files with Secrets (CRITICAL)
+# -----------------------------------------------------------------------------
+# These files are modified by entrypoint scripts to inject secrets.
+# We ignore them to ensure the repo only contains templates (with ${VAR}).
+infra/docker/trino/catalog/minio.properties
+infra/docker/trino/catalog/iceberg.properties
+infra/docker/hive/conf/hive-site.xml
 
 # -----------------------------------------------------------------------------
 # Jupyter Notebooks
@@ -91,7 +104,6 @@ coverage.xml
 # -----------------------------------------------------------------------------
 # Secrets & Credentials (CRITICAL)
 # -----------------------------------------------------------------------------
-.env
 *.pem
 *.key
 secrets/
