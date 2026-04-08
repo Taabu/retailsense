@@ -34,18 +34,25 @@ services:
     image: confluentinc/cp-kafka:7.6.1
     container_name: retailsense-kafka
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_started
     ports:
       - "9092:9092"
       - "29092:29092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://127.0.0.1:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: [ "CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092" ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     networks:
       - retailsense-net
 
@@ -63,6 +70,90 @@ services:
     restart: unless-stopped
     networks:
       - retailsense-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Producer Service: Sensor Simulator
+  # ─────────────────────────────────────────────────────────────────────────────
+  producer:
+    build:
+      context: ./modules/producer
+      dockerfile: Dockerfile
+    container_name: retailsense-producer
+    depends_on:
+      mosquitto:
+        condition: service_started
+    environment:
+      # Application
+      APP_NAME: retailsense-producer
+      LOG_LEVEL: INFO
+      PRODUCER_INSTANCE_ID: producer-001
+
+      # MQTT
+      MQTT_BROKER_HOST: mosquitto
+      MQTT_BROKER_PORT: 1883
+      MQTT_TOPIC: sensors/traffic
+      MQTT_QOS: 1
+
+      # Simulation
+      PRODUCER_RATE: 100
+      BATCH_SIZE: 100
+      NUM_STORES: 3
+      NUM_ZONES_PER_STORE: 4
+      USE_REALISTIC_PATTERNS: "true"
+      TIMEZONE: Europe/Madrid
+
+    restart: unless-stopped
+    networks:
+      - retailsense-net
+    # Optional: Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Bridge Service: MQTT to Kafka
+  # ─────────────────────────────────────────────────────────────────────────────
+  bridge:
+    build:
+      context: ./modules/bridge
+      dockerfile: Dockerfile
+    container_name: retailsense-bridge
+    depends_on:
+      mosquitto:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    environment:
+      # Application
+      APP_NAME: retailsense-bridge
+      LOG_LEVEL: INFO
+      BRIDGE_INSTANCE_ID: bridge-001
+
+      # MQTT
+      MQTT_BROKER_HOST: mosquitto
+      MQTT_BROKER_PORT: 1883
+      MQTT_TOPIC: sensors/traffic
+      MQTT_QOS: 1
+
+      # Kafka
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: sensor-traffic
+      KAFKA_ACKS: all
+
+      # Optional: Dead Letter Queue
+      DLQ_ENABLED: "false"
+      DLQ_TOPIC: sensor-traffic-dlq
+    restart: unless-stopped
+    networks:
+      - retailsense-net
+    # Optional: Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
 
   # ─────────────────────────────────────────────────────────────────────────────
   # MinIO (S3 Compatible)
@@ -92,8 +183,8 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: retail_metadata
     volumes:
       - ./infra/docker/postgres/data:/var/lib/postgresql/data
@@ -101,7 +192,124 @@ services:
     restart: unless-stopped
     networks:
       - retailsense-net
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Hive Metastore Database (PostgreSQL)
+  # ─────────────────────────────────────────────────────────────────────────────
+  hive-db:
+    image: postgres:13-alpine
+    container_name: retailsense-hive-db
+    environment:
+      POSTGRES_USER: ${HIVE_DB_USER:-hive}
+      POSTGRES_PASSWORD: ${HIVE_DB_PASSWORD:-hive}
+      POSTGRES_DB: metastore_db
+    volumes:
+      - hive-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U hive -d metastore_db" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - retailsense-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Hive Metastore Service
+  # ─────────────────────────────────────────────────────────────────────────────
+  hive-metastore:
+    image: apache/hive:3.1.3
+    container_name: retailsense-hive-metastore
+    depends_on:
+      hive-db:
+        condition: service_healthy
+    entrypoint: []
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_REGION: us-east-1
+      S3_ENDPOINT: http://minio:9000
+      S3_PATH_STYLE_ACCESS: "true"
+      HIVE_METASTORE_WAREHOUSE_DIR: s3a://iceberg-data/
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      HIVE_DB_USER: ${HIVE_DB_USER:-hive}
+      HIVE_DB_PASSWORD: ${HIVE_DB_PASSWORD:-hive}
+    command: >
+      bash -c '
+        echo "Injecting secrets into hive-site.xml...";
+        
+        # Hardcode path and escape ALL $ signs with $$
+        sed -i "s|\$${MINIO_ACCESS_KEY}|$${MINIO_ACCESS_KEY}|g" "/opt/hive/conf/hive-site.xml";
+        sed -i "s|\$${MINIO_SECRET_KEY}|$${MINIO_SECRET_KEY}|g" "/opt/hive/conf/hive-site.xml";
+        sed -i "s|\$${HIVE_DB_USER}|$${HIVE_DB_USER}|g" "/opt/hive/conf/hive-site.xml";
+        sed -i "s|\$${HIVE_DB_PASSWORD}|$${HIVE_DB_PASSWORD}|g" "/opt/hive/conf/hive-site.xml";
+        
+        echo "Verifying injection:";
+        grep -A1 "ConnectionUserName" "/opt/hive/conf/hive-site.xml";
+        grep -A1 "ConnectionPassword" "/opt/hive/conf/hive-site.xml";
+        
+        echo "Checking Hive Metastore Schema...";
+        
+        # Run infoSchema
+        SCHEMA_CHECK=$(/opt/hive/bin/schematool -dbType postgres -infoSchema -verbose 2>&1);
+        SCHEMA_STATUS=$$?;
+        
+        if [ $$SCHEMA_STATUS -eq 0 ] && echo "$$SCHEMA_CHECK" | grep -q "Schema version is consistent"; then
+          echo "✅ Schema is consistent. Skipping initialization.";
+        else
+          echo "⚠️ Schema is missing or inconsistent. Resetting...";
+          echo "Dropping public schema via beeline...";
+          /opt/hive/bin/beeline \
+            -u "jdbc:postgresql://hive-db:5432/metastore_db?user=$${HIVE_DB_USER}&password=$${HIVE_DB_PASSWORD}" \
+            -e "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;" \
+            --showWarnings=false \
+            --outputformat=tsv2;
+          
+          if [ $$? -ne 0 ]; then
+            echo "❌ Failed to drop schema. Exiting.";
+            exit 1;
+          fi;
+          
+          echo "Initializing schema...";
+          /opt/hive/bin/schematool -dbType postgres -initSchema -verbose;
+          if [ $$? -ne 0 ]; then
+            echo "❌ Schema init failed. Exiting.";
+            exit 1;
+          fi;
+        fi;
+        
+        echo "Starting Hive Metastore...";
+        exec java -cp "/opt/hive/lib/*:/opt/hadoop/share/hadoop/common/*:/opt/hadoop/share/hadoop/common/lib/*:/opt/hadoop/share/hadoop/hdfs/*:/opt/hadoop/share/hadoop/mapreduce/*:/opt/hadoop/share/hadoop/yarn/*:/opt/hadoop/share/hadoop/tools/lib/*" \
+          -Dfs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+          -Dfs.s3a.access.key=$${MINIO_ACCESS_KEY} \
+          -Dfs.s3a.secret.key=$${MINIO_SECRET_KEY} \
+          -Dfs.s3a.endpoint=http://minio:9000 \
+          -Dfs.s3a.path.style.access=true \
+          -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://hive-db:5432/metastore_db \
+          -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver \
+          -Djavax.jdo.option.ConnectionUserName=$${HIVE_DB_USER} \
+          -Djavax.jdo.option.ConnectionPassword=$${HIVE_DB_PASSWORD} \
+          -Dhive.metastore.warehouse.dir=s3a://iceberg-data/ \
+          org.apache.hadoop.hive.metastore.HiveMetaStore
+      '
+    volumes:
+      - ./infra/docker/hive/conf:/opt/hive/conf
+    networks:
+      - retailsense-net
+    ports:
+      - "9083:9083"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
   # ─────────────────────────────────────────────────────────────────────────────
   # Trino
   # ─────────────────────────────────────────────────────────────────────────────
@@ -111,13 +319,45 @@ services:
     ports:
       - "8083:8080"
     volumes:
+      - ./infra/docker/trino/config:/etc/trino
       - ./infra/docker/trino/catalog:/etc/trino/catalog
+      - ./infra/docker/trino/data:/var/trino/data
     environment:
-      TRINO_MEMORY_HEAP_SIZE: 1g
+      TRINO_MEMORY_HEAP_SIZE: ${TRINO_MEMORY_HEAP_SIZE:-1g}
+      # Pass credentials for substitution
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+    entrypoint: >
+      bash -c '
+        echo "Injecting secrets into Trino catalog files...";
+        
+        # Hardcode paths and escape ALL $ signs with $$
+        sed -i "s|\$${MINIO_ACCESS_KEY}|$${MINIO_ACCESS_KEY}|g" "/etc/trino/catalog/minio.properties";
+        sed -i "s|\$${MINIO_SECRET_KEY}|$${MINIO_SECRET_KEY}|g" "/etc/trino/catalog/minio.properties";
+        sed -i "s|\$${MINIO_ACCESS_KEY}|$${MINIO_ACCESS_KEY}|g" "/etc/trino/catalog/iceberg.properties";
+        sed -i "s|\$${MINIO_SECRET_KEY}|$${MINIO_SECRET_KEY}|g" "/etc/trino/catalog/iceberg.properties";
+        
+        echo "Verifying injection:";
+        grep "aws-access-key" "/etc/trino/catalog/minio.properties";
+        grep "aws-secret-key" "/etc/trino/catalog/minio.properties";
+        
+        echo "Starting Trino...";
+        exec /usr/lib/trino/bin/launcher run --etc-dir /etc/trino
+      '
+    healthcheck:
+      test: [ "CMD-SHELL", "java -cp /usr/lib/trino/lib/trino-cli-*.jar com.facebook.trino.cli.Trino --server http://localhost:8080 --execute 'SELECT 1' || exit 1" ]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
     restart: unless-stopped
     networks:
       - retailsense-net
-
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
   # ─────────────────────────────────────────────────────────────────────────────
   # Apache Superset
   # ─────────────────────────────────────────────────────────────────────────────
@@ -128,7 +368,7 @@ services:
       - "8088:8088"
     environment:
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
-      SQLALCHEMY_DATABASE_URI: ${SUPERSET_DB_URI}
+      SQLALCHEMY_DATABASE_URI: ${SQLALCHEMY_DATABASE_URI}
       # Force the home directory to /tmp to avoid SQLite creation
       SUPERSET_HOME: /tmp/superset_home
     depends_on:
@@ -143,24 +383,77 @@ services:
       - retailsense-net
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Spark Master
+  # Spark Processor: Kafka to Iceberg Stream
   # ─────────────────────────────────────────────────────────────────────────────
-  spark-master:
-    image: bitnamilegacy/spark:3.5.6
-    # Alternative if the above fails:
-    # image: apache/spark:3.5.0
-    container_name: retailsense-spark-master
-    ports:
-      - "8080-8081:8080-8081"
-      - "7077:7077"
+  spark-processor:
+    build:
+      context: ./modules/processor
+      dockerfile: Dockerfile
+    container_name: retailsense-spark-processor
+    depends_on:
+      kafka:
+        condition: service_healthy
+      hive-metastore:
+        condition: service_started
+      minio:
+        condition: service_started
     environment:
-      SPARK_MODE: master
-      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
-      SPARK_RPC_ENCRYPTION_ENABLED: "no"
-      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
-      SPARK_SSL_ENABLED: "no"
+      # Application
+      APP_NAME: retailsense-processor
+      LOG_LEVEL: INFO
+      PROCESSOR_INSTANCE_ID: processor-001
+
+      # Spark Configuration
+      SPARK_MASTER: local[*]
+      SPARK_APP_NAME: RetailSense-Processor
+      SPARK_EXECUTOR_MEMORY: 2g
+      SPARK_DRIVER_MEMORY: 1g
+      SPARK_CORES_MAX: 4
+      SPARK_SHUFFLE_PARTITIONS: 200
+
+      # Kafka
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: sensor-traffic
+      KAFKA_STARTING_OFFSETS: latest
+      KAFKA_FAIL_ON_DATA_LOSS: "false" # For development only
+
+      # Iceberg / MinIO
+      ICEBERG_WAREHOUSE: s3a://iceberg-data/
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_REGION: us-east-1
+      S3_PATH_STYLE_ACCESS: "true"
+
+      # Hive
+      HIVE_METASTORE_URI: thrift://hive-metastore:9083
+      HIVE_DATABASE: retailsense
+
+      # Stream Processing
+      CHECKPOINT_PATH: /tmp/spark-checkpoints/retailsense
+      WATERMARK_DELAY: 10 minutes
+      AGGREGATION_WINDOW: 5 minutes
+      TRIGGER_INTERVAL: 5 seconds
+
+      # Dead Letter Queue
+      DLQ_ENABLED: "false"
+      DLQ_TOPIC: sensor-events-dlq
+
+    # Resource Limits (Critical for Spark to prevent OOM)
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4G
+        reservations:
+          cpus: '2.0'
+          memory: 2G
+
+    # Volumes for Checkpointing (Persist state across restarts)
     volumes:
-      - ./infra/docker/spark/master:/opt/bitnami/spark/conf
+      - ./modules/processor/src:/app/src
+      - spark-checkpoints:/tmp/spark-checkpoints
+
     restart: unless-stopped
     networks:
       - retailsense-net
@@ -168,3 +461,18 @@ services:
 networks:
   retailsense-net:
     driver: bridge
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Volumes
+# ─────────────────────────────────────────────────────────────────────────────
+volumes:
+  mosquitto-data:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  minio-data:
+  postgres-data:
+  hive-db-data:
+  trino-data:
+  superset-home:
+  spark-checkpoints:
