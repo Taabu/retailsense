@@ -114,6 +114,7 @@ metastore_db/
 derby.log
 yarn/
 hadoop/
+infra/docker/hive/db/
 
 # -----------------------------------------------------------------------------
 # Temporary Files
