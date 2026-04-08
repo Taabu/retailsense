@@ -8,9 +8,6 @@ authors = [{name = "Mario Romera", email = "mromera@pm.me"}]
 keywords = ["data-engineering", "spark", "kafka", "iceberg", "privacy"]
 license = {text = "MIT"}
 
-[tool.uv.workspace]
-members = ["modules/*"]
-
 [tool.black]
 line-length = 100
 target-version = ['py311']
