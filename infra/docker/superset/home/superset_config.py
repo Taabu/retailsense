@@ -1,7 +1,7 @@
 import os
 
 # Force PostgreSQL
-SQLALCHEMY_DATABASE_URI = os.environ.get("SUPERSET_DB_URI")
+SQLALCHEMY_DATABASE_URI = os.environ.get("SQLALCHEMY_DATABASE_URI")
 
 # CRITICAL: Disable the default SQLite fallback
 # This prevents Superset from looking for superset.db in the home directory
