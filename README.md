@@ -182,3 +182,5 @@ Defaults are safe for local development
 
 ## 📄 License
 MIT License. See LICENSE for details.
+
+## 🤖 Created with the Help of [Lumo](https://lumo.proton.me/)
