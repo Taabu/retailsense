@@ -167,12 +167,41 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    command: server /data --console-address ":9001"
+    entrypoint: >
+      bash -c '
+        echo "Starting MinIO server in background...";
+        minio server /data --console-address ":9001" &
+        
+        echo "Waiting for MinIO to be ready...";
+        until curl -sf http://localhost:9000/minio/health/live; do
+          sleep 1;
+        done;
+        
+        echo "Creating iceberg-data bucket...";
+        mc alias set myminio http://localhost:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD;
+        mc mb myminio/iceberg-data 2>/dev/null || true;
+        
+        echo "✅ MinIO ready with iceberg-data bucket.";
+        
+        # Keep the foreground process alive
+        wait
+      '
     volumes:
-      - ./infra/docker/minio/data:/data
+      - minio-data:/data
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
     networks:
       - retailsense-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # PostgreSQL
@@ -189,6 +218,12 @@ services:
     volumes:
       - ./infra/docker/postgres/data:/var/lib/postgresql/data
       - ./infra/docker/postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres && psql -U postgres -t -c \"SELECT 1 FROM pg_roles WHERE rolname='superset'\" | grep -q 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     restart: unless-stopped
     networks:
       - retailsense-net
@@ -238,8 +273,8 @@ services:
       HIVE_METASTORE_WAREHOUSE_DIR: s3a://iceberg-data/
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-      HIVE_DB_USER: ${HIVE_DB_USER:-hive}
-      HIVE_DB_PASSWORD: ${HIVE_DB_PASSWORD:-hive}
+      HIVE_DB_USER: ${HIVE_DB_USER}
+      HIVE_DB_PASSWORD: ${HIVE_DB_PASSWORD}
     command: >
       bash -c '
         echo "Injecting secrets into hive-site.xml...";
@@ -362,22 +397,52 @@ services:
   # Apache Superset
   # ─────────────────────────────────────────────────────────────────────────────
   superset:
-    image: apache/superset:3.1.3
+    build:
+      context: ./infra/docker/superset
+      dockerfile: Dockerfile
     container_name: retailsense-superset
     ports:
       - "8088:8088"
     environment:
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
       SQLALCHEMY_DATABASE_URI: ${SQLALCHEMY_DATABASE_URI}
-      # Force the home directory to /tmp to avoid SQLite creation
       SUPERSET_HOME: /tmp/superset_home
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    entrypoint: >
+      bash -c '
+        echo "Waiting for database initialization to complete...";
+        sleep 20; 
+        
+        echo "Running database migrations...";
+        superset db upgrade;
+        
+        echo "Initializing Superset...";
+        superset init;
+        
+        echo "Creating admin user (if not exists)...";
+        superset fab create-admin \
+          --username admin \
+          --firstname Superset \
+          --lastname Admin \
+          --email admin@superset.com \
+          --password admin \
+          || true;
+        
+        # Import Dashboard if backup exists
+        if [ -f /app/backups/superset_dashboard_backup.zip ]; then
+          echo "Importing dashboard backup...";
+          superset import-dashboards -p /app/backups/superset_dashboard_backup.zip -u 'admin';
+        fi;
+        
+        echo "Starting Superset...";
+        exec superset run -h 0.0.0.0 -p 8088
+      '
     volumes:
-      # Mount the custom config file to the pythonpath
       - ./infra/docker/superset/home/superset_config.py:/app/pythonpath/superset_config.py:ro
-      # Mount the home directory to /tmp inside the container (optional, but good for persistence if needed)
       - ./infra/docker/superset/home:/app/superset_home
+      - ./infra/docker/superset/backups:/app/backups
     restart: unless-stopped
     networks:
       - retailsense-net
