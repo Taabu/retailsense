@@ -60,6 +60,9 @@ def create_spark_session():
             .config("spark.hadoop.fs.s3a.secret.key", settings.minio_secret_key)
             .config("spark.hadoop.fs.s3a.endpoint", settings.minio_endpoint)
             .config("spark.hadoop.fs.s3a.path.style.access", "true")
+            .config(
+                "spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem"
+            )
             .config("spark.sql.streaming.schemaInference", "true")
             .config(
                 "spark.driver.extraJavaOptions",
