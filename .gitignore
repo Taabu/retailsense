@@ -149,3 +149,8 @@ logs/
 *.tar.gz
 *.whl
 *.zip
+
+# -----------------------------------------------------------------------------
+# Superset dashboard
+# -----------------------------------------------------------------------------
+!infra/docker/superset/backups/superset_dashboard_backup.zip
